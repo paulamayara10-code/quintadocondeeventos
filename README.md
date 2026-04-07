@@ -1,28 +1,23 @@
-# Quinta do Conde - Sistema Comercial + Gestão de Eventos (V4)
+# Quinta do Conde - Sistema Comercial + Gestão de Eventos (V5)
 
-Versão com proposta em PDF e formação manual.
+## Novidades desta versão
+- opção de exportar backup completo em Excel
+- opção de importar o mesmo backup para restaurar a base
+- inclusão via sistema permanece normal
+- proposta em PDF mantida
+- layout refinado com paleta mais inspirada no estilo rústico/elegante da Quinta do Conde
 
-## Como os dados ficam armazenados
-- o sistema usa banco local SQLite
-- o arquivo do banco se chama `eventos_fazenda_v4.db`
-- ele é criado automaticamente na primeira execução
-- todos os cadastros ficam gravados nesse arquivo
-
-## Risco de perda
-Existe risco se:
-- apagar o arquivo `.db`
-- trocar de máquina sem copiar o banco
-- rodar em ambiente temporário sem persistência
-- corromper a pasta do projeto
-
-## Como evitar perda
-- manter a pasta do sistema em local fixo
-- fazer backup periódico do arquivo `.db`
-- se usar GitHub/Streamlit Cloud, não usar SQLite como base principal de produção
-- para produção real, o ideal é migrar para banco persistente como PostgreSQL/Supabase
+## Como funciona o backup
+- o sistema continua sendo o ponto principal de cadastro
+- o Excel funciona como backup e intercâmbio padronizado
+- a importação substitui a base atual do sistema
 
 ## Como rodar
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## Arquivos importantes
+- `eventos_fazenda_v5.db` = base local SQLite
+- backup Excel = arquivo exportado pela tela "Backup Excel"

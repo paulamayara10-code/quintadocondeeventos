@@ -1,19 +1,21 @@
 import sqlite3
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from io import BytesIO
 
 import pandas as pd
 import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.pdfbase.pdfmetrics import stringWidth
 from reportlab.lib.units import cm
-from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
-DB_FILE = "eventos_fazenda_v4.db"
+DB_FILE = "eventos_fazenda_v5.db"
 
 
+# ---------------------------
+# Banco
+# ---------------------------
 def get_conn():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
@@ -127,17 +129,6 @@ def init_db():
             status TEXT DEFAULT 'Pendente',
             observacoes TEXT,
             FOREIGN KEY (evento_id) REFERENCES eventos(id)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS fornecedores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            servico TEXT,
-            telefone TEXT,
-            email TEXT,
-            observacoes TEXT
         )
     """)
 
@@ -292,7 +283,7 @@ def get_servicos_evento(evento_id):
 
 def existe_conflito(data_evento, espaco_id, evento_id=None):
     sql = """
-        SELECT id, titulo
+        SELECT id
         FROM eventos
         WHERE data_evento = ?
           AND espaco_id = ?
@@ -302,8 +293,7 @@ def existe_conflito(data_evento, espaco_id, evento_id=None):
     if evento_id:
         sql += " AND id <> ?"
         params.append(evento_id)
-    df = run_query(sql, tuple(params))
-    return not df.empty
+    return not run_query(sql, tuple(params)).empty
 
 
 def carregar_checklist_padrao(evento_id):
@@ -356,14 +346,276 @@ def resumo_financeiro_evento(evento_id):
     aberto = valor_total - receb_total
     lucro = receb_total - desp_total
     margem = (lucro / receb_total * 100) if receb_total else 0.0
-    return valor_total, receb_total, aberto, desp_total, lucro, margem
+    return valor_total, recebido_total if False else receb_total, aberto, desp_total, lucro, margem
 
 
-def df_to_csv_download(df, file_name, label):
-    csv = df.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(label, csv, file_name=file_name, mime="text/csv")
+# ---------------------------
+# Excel backup
+# ---------------------------
+def exportar_backup_excel():
+    clientes_df = run_query("""
+        SELECT id AS ID_CLIENTE, nome AS NOME, telefone AS TELEFONE, email AS EMAIL,
+               documento AS DOCUMENTO, tipo_cliente AS TIPO, empresa AS EMPRESA,
+               origem_lead AS ORIGEM_LEAD, observacoes AS OBSERVACOES
+        FROM clientes ORDER BY id
+    """)
+
+    eventos_df = run_query("""
+        SELECT
+            e.id AS ID_EVENTO,
+            COALESCE(e.codigo, 'EVT-' || e.id) AS CODIGO,
+            e.titulo AS TITULO,
+            e.cliente_id AS ID_CLIENTE,
+            c.nome AS CLIENTE,
+            e.data_evento AS DATA_EVENTO,
+            te.nome AS TIPO_EVENTO,
+            es.nome AS ESPACO,
+            e.quantidade_convidados AS CONVIDADOS,
+            e.status_pipeline AS STATUS_PIPELINE,
+            e.status_operacional AS STATUS_OPERACIONAL,
+            e.valor_locacao AS VALOR_LOCACAO,
+            e.valor_convidados AS VALOR_CONVIDADOS,
+            e.valor_servicos AS VALOR_SERVICOS,
+            e.desconto AS DESCONTO,
+            e.valor_total AS VALOR_TOTAL,
+            e.sinal_pago AS SINAL_PAGO,
+            e.forma_pagamento AS FORMA_PAGAMENTO,
+            e.responsavel_comercial AS RESPONSAVEL_COMERCIAL,
+            e.responsavel_interno AS RESPONSAVEL_INTERNO,
+            e.observacoes AS OBSERVACOES
+        FROM eventos e
+        LEFT JOIN clientes c ON c.id = e.cliente_id
+        LEFT JOIN tipos_evento te ON te.id = e.tipo_evento_id
+        LEFT JOIN espacos es ON es.id = e.espaco_id
+        ORDER BY e.id
+    """)
+
+    servicos_df = run_query("""
+        SELECT id AS ID_SERVICO, evento_id AS ID_EVENTO, servico AS SERVICO,
+               fornecedor AS FORNECEDOR, valor AS VALOR, observacoes AS OBSERVACOES
+        FROM servicos_adicionais ORDER BY id
+    """)
+
+    pagamentos_df = run_query("""
+        SELECT id AS ID_PAGAMENTO, evento_id AS ID_EVENTO, descricao AS DESCRICAO,
+               valor AS VALOR, vencimento AS VENCIMENTO, data_pagamento AS DATA_PAGAMENTO,
+               status AS STATUS, forma_pagamento AS FORMA, observacoes AS OBSERVACOES
+        FROM pagamentos ORDER BY id
+    """)
+
+    despesas_df = run_query("""
+        SELECT id AS ID_DESPESA, evento_id AS ID_EVENTO, fornecedor AS FORNECEDOR,
+               descricao AS DESCRICAO, valor AS VALOR, vencimento AS VENCIMENTO,
+               data_pagamento AS DATA_PAGAMENTO, status AS STATUS, observacoes AS OBSERVACOES
+        FROM despesas ORDER BY id
+    """)
+
+    estrutura_df = run_query("""
+        SELECT id AS ID_ESPACO, nome AS ESPACO, capacidade AS CAPACIDADE, descricao AS DESCRICAO
+        FROM espacos WHERE ativo = 1 ORDER BY id
+    """)
+    tipos_df = run_query("""
+        SELECT id AS ID_TIPO, nome AS TIPO_EVENTO, capacidade_sugerida AS CAPACIDADE_SUGERIDA, regras AS REGRAS
+        FROM tipos_evento WHERE ativo = 1 ORDER BY id
+    """)
+
+    instrucoes_df = pd.DataFrame({
+        "ORIENTACAO": [
+            "Use este arquivo como backup e padrão de intercâmbio.",
+            "A importação do backup substitui a base atual do sistema.",
+            "Mantenha os nomes das abas e das colunas exatamente como estão.",
+            "A inclusão via sistema permanece ativa normalmente.",
+            "Antes de importar, salve uma cópia do backup anterior."
+        ]
+    })
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        instrucoes_df.to_excel(writer, sheet_name="INSTRUCOES", index=False)
+        clientes_df.to_excel(writer, sheet_name="CLIENTES", index=False)
+        eventos_df.to_excel(writer, sheet_name="EVENTOS", index=False)
+        servicos_df.to_excel(writer, sheet_name="SERVICOS", index=False)
+        pagamentos_df.to_excel(writer, sheet_name="PAGAMENTOS", index=False)
+        despesas_df.to_excel(writer, sheet_name="DESPESAS", index=False)
+        estrutura_df.to_excel(writer, sheet_name="ESPACOS", index=False)
+        tipos_df.to_excel(writer, sheet_name="TIPOS_EVENTO", index=False)
+    output.seek(0)
+    return output.getvalue()
 
 
+def importar_backup_excel(uploaded_file):
+    xls = pd.ExcelFile(uploaded_file)
+
+    obrigatorias = ["CLIENTES", "EVENTOS", "SERVICOS", "PAGAMENTOS", "DESPESAS"]
+    faltantes = [aba for aba in obrigatorias if aba not in xls.sheet_names]
+    if faltantes:
+        raise ValueError(f"Abas obrigatórias ausentes: {', '.join(faltantes)}")
+
+    clientes = pd.read_excel(xls, "CLIENTES").fillna("")
+    eventos = pd.read_excel(xls, "EVENTOS").fillna("")
+    servicos = pd.read_excel(xls, "SERVICOS").fillna("")
+    pagamentos = pd.read_excel(xls, "PAGAMENTOS").fillna("")
+    despesas = pd.read_excel(xls, "DESPESAS").fillna("")
+
+    espacos = pd.read_excel(xls, "ESPACOS").fillna("") if "ESPACOS" in xls.sheet_names else pd.DataFrame()
+    tipos = pd.read_excel(xls, "TIPOS_EVENTO").fillna("") if "TIPOS_EVENTO" in xls.sheet_names else pd.DataFrame()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    for tabela in ["servicos_adicionais", "pagamentos", "despesas", "checklist_evento", "eventos", "clientes"]:
+        cur.execute(f"DELETE FROM {tabela}")
+
+    if not espacos.empty:
+        cur.execute("DELETE FROM espacos")
+        for _, r in espacos.iterrows():
+            cur.execute("""
+                INSERT INTO espacos (id, nome, capacidade, descricao, ativo)
+                VALUES (?, ?, ?, ?, 1)
+            """, (
+                int(r.get("ID_ESPACO")) if str(r.get("ID_ESPACO")).strip() else None,
+                str(r.get("ESPACO", "")),
+                int(r.get("CAPACIDADE") or 0),
+                str(r.get("DESCRICAO", ""))
+            ))
+
+    if not tipos.empty:
+        cur.execute("DELETE FROM tipos_evento")
+        for _, r in tipos.iterrows():
+            cur.execute("""
+                INSERT INTO tipos_evento (id, nome, capacidade_sugerida, regras, ativo)
+                VALUES (?, ?, ?, ?, 1)
+            """, (
+                int(r.get("ID_TIPO")) if str(r.get("ID_TIPO")).strip() else None,
+                str(r.get("TIPO_EVENTO", "")),
+                int(r.get("CAPACIDADE_SUGERIDA") or 0),
+                str(r.get("REGRAS", ""))
+            ))
+
+    mapa_clientes = {}
+    for _, r in clientes.iterrows():
+        cur.execute("""
+            INSERT INTO clientes (id, nome, telefone, email, documento, tipo_cliente, empresa, origem_lead, observacoes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            int(r["ID_CLIENTE"]) if str(r["ID_CLIENTE"]).strip() else None,
+            str(r.get("NOME", "")),
+            str(r.get("TELEFONE", "")),
+            str(r.get("EMAIL", "")),
+            str(r.get("DOCUMENTO", "")),
+            str(r.get("TIPO", "")),
+            str(r.get("EMPRESA", "")),
+            str(r.get("ORIGEM_LEAD", "")),
+            str(r.get("OBSERVACOES", ""))
+        ))
+        if str(r["ID_CLIENTE"]).strip():
+            mapa_clientes[int(r["ID_CLIENTE"])] = int(r["ID_CLIENTE"])
+
+    mapa_espacos = {row["nome"]: row["id"] for _, row in pd.read_sql_query("SELECT id, nome FROM espacos", conn).iterrows()}
+    mapa_tipos = {row["nome"]: row["id"] for _, row in pd.read_sql_query("SELECT id, nome FROM tipos_evento", conn).iterrows()}
+
+    for _, r in eventos.iterrows():
+        cliente_id = int(r["ID_CLIENTE"]) if str(r.get("ID_CLIENTE", "")).strip() else None
+        espaco_id = mapa_espacos.get(str(r.get("ESPACO", "")).strip())
+        tipo_id = mapa_tipos.get(str(r.get("TIPO_EVENTO", "")).strip())
+
+        cur.execute("""
+            INSERT INTO eventos (
+                id, codigo, titulo, cliente_id, tipo_evento_id, espaco_id, data_evento, hora_inicio, hora_fim,
+                quantidade_convidados, status_pipeline, status_operacional, valor_locacao, valor_convidados,
+                valor_servicos, desconto, valor_total, sinal_pago, forma_pagamento, responsavel_comercial,
+                responsavel_interno, observacoes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            int(r["ID_EVENTO"]) if str(r["ID_EVENTO"]).strip() else None,
+            str(r.get("CODIGO", "")),
+            str(r.get("TITULO", "")),
+            cliente_id,
+            tipo_id,
+            espaco_id,
+            str(r.get("DATA_EVENTO", ""))[:10],
+            "",
+            "",
+            int(r.get("CONVIDADOS") or 0),
+            str(r.get("STATUS_PIPELINE", "")),
+            str(r.get("STATUS_OPERACIONAL", "")),
+            float(r.get("VALOR_LOCACAO") or 0),
+            float(r.get("VALOR_CONVIDADOS") or 0),
+            float(r.get("VALOR_SERVICOS") or 0),
+            float(r.get("DESCONTO") or 0),
+            float(r.get("VALOR_TOTAL") or 0),
+            float(r.get("SINAL_PAGO") or 0),
+            str(r.get("FORMA_PAGAMENTO", "")),
+            str(r.get("RESPONSAVEL_COMERCIAL", "")),
+            str(r.get("RESPONSAVEL_INTERNO", "")),
+            str(r.get("OBSERVACOES", ""))
+        ))
+
+    for _, r in servicos.iterrows():
+        cur.execute("""
+            INSERT INTO servicos_adicionais (evento_id, servico, fornecedor, valor, observacoes)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            int(r.get("ID_EVENTO")),
+            str(r.get("SERVICO", "")),
+            str(r.get("FORNECEDOR", "")),
+            float(r.get("VALOR") or 0),
+            str(r.get("OBSERVACOES", ""))
+        ))
+
+    for _, r in pagamentos.iterrows():
+        cur.execute("""
+            INSERT INTO pagamentos (evento_id, descricao, valor, vencimento, data_pagamento, status, forma_pagamento, observacoes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            int(r.get("ID_EVENTO")),
+            str(r.get("DESCRICAO", "")),
+            float(r.get("VALOR") or 0),
+            str(r.get("VENCIMENTO", ""))[:10],
+            str(r.get("DATA_PAGAMENTO", ""))[:10] if str(r.get("DATA_PAGAMENTO", "")).strip() else None,
+            str(r.get("STATUS", "")),
+            str(r.get("FORMA", "")),
+            str(r.get("OBSERVACOES", ""))
+        ))
+
+    for _, r in despesas.iterrows():
+        cur.execute("""
+            INSERT INTO despesas (evento_id, fornecedor, descricao, valor, vencimento, data_pagamento, status, observacoes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            int(r.get("ID_EVENTO")),
+            str(r.get("FORNECEDOR", "")),
+            str(r.get("DESCRICAO", "")),
+            float(r.get("VALOR") or 0),
+            str(r.get("VENCIMENTO", ""))[:10],
+            str(r.get("DATA_PAGAMENTO", ""))[:10] if str(r.get("DATA_PAGAMENTO", "")).strip() else None,
+            str(r.get("STATUS", "")),
+            str(r.get("OBSERVACOES", ""))
+        ))
+
+    evento_ids = [r[0] for r in cur.execute("SELECT id FROM eventos").fetchall()]
+    for evento_id in evento_ids:
+        existentes = [r[0] for r in cur.execute("SELECT item FROM checklist_evento WHERE evento_id = ?", (evento_id,)).fetchall()]
+        for item in [
+            "Visita realizada", "Proposta enviada", "Contrato assinado", "Sinal recebido",
+            "Cardápio definido", "Decoração alinhada", "DJ/Banda confirmado",
+            "Fotografia alinhada", "Equipe de apoio escalada", "Montagem programada",
+            "Desmontagem programada"
+        ]:
+            if item not in existentes:
+                cur.execute("""
+                    INSERT INTO checklist_evento (evento_id, item, concluido, observacoes)
+                    VALUES (?, ?, 0, '')
+                """, (evento_id, item))
+
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------
+# PDF
+# ---------------------------
 def wrap_text(c, text, max_width, font_name="Helvetica", font_size=10):
     if not text:
         return []
@@ -385,8 +637,8 @@ def wrap_text(c, text, max_width, font_name="Helvetica", font_size=10):
 
 def draw_box(c, x, y, w, h, title, body_lines):
     c.setFillColor(colors.white)
-    c.setStrokeColor(colors.HexColor("#D9CDBE"))
-    c.roundRect(x, y, w, h, 8, stroke=1, fill=1)
+    c.setStrokeColor(colors.HexColor("#DCCFBE"))
+    c.roundRect(x, y, w, h, 10, stroke=1, fill=1)
     c.setFillColor(colors.HexColor("#7A5A43"))
     c.setFont("Helvetica-Bold", 10)
     c.drawString(x + 12, y + h - 16, title)
@@ -407,17 +659,14 @@ def gerar_pdf_proposta(evento_id):
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-
     margem = 1.6 * cm
     usable_w = width - 2 * margem
 
-    # fundo / cabeçalho
-    c.setFillColor(colors.HexColor("#FAF7F2"))
+    c.setFillColor(colors.HexColor("#F8F4EE"))
     c.rect(0, 0, width, height, fill=1, stroke=0)
 
     c.setFillColor(colors.HexColor("#5A402C"))
-    c.roundRect(margem, height - 4.0*cm, usable_w, 2.5*cm, 14, fill=1, stroke=0)
-
+    c.roundRect(margem, height - 4.1*cm, usable_w, 2.5*cm, 16, fill=1, stroke=0)
     c.setFillColor(colors.white)
     c.setFont("Helvetica-Bold", 22)
     c.drawString(margem + 16, height - 2.2*cm, "Quinta do Conde")
@@ -426,49 +675,41 @@ def gerar_pdf_proposta(evento_id):
 
     c.setFillColor(colors.HexColor("#3F2F20"))
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(margem, height - 4.9*cm, evento.get("titulo", ""))
-
+    c.drawString(margem, height - 5.0*cm, str(evento.get("titulo", "")))
     c.setFont("Helvetica", 10)
-    subtitulo = f"Código {evento.get('codigo', '')}  |  Data do evento {pd.to_datetime(evento.get('data_evento')).strftime('%d/%m/%Y') if evento.get('data_evento') else ''}"
-    c.drawString(margem, height - 5.5*cm, subtitulo)
+    data_txt = pd.to_datetime(evento.get("data_evento")).strftime("%d/%m/%Y") if evento.get("data_evento") else ""
+    c.drawString(margem, height - 5.6*cm, f"Código {evento.get('codigo', '')} | Data do evento {data_txt}")
 
-    # cards
     box_y = height - 9.4 * cm
     box_h = 3.1 * cm
-    box_gap = 0.35 * cm
-    box_w = (usable_w - box_gap) / 2
+    gap = 0.35 * cm
+    box_w = (usable_w - gap) / 2
 
-    cliente_linhas = [
+    draw_box(c, margem, box_y, box_w, box_h, "Dados do cliente", [
         f"Cliente: {evento.get('cliente_nome') or '-'}",
         f"Telefone: {evento.get('cliente_telefone') or '-'}",
         f"E-mail: {evento.get('cliente_email') or '-'}",
-    ]
-    evento_linhas = [
+    ])
+    draw_box(c, margem + box_w + gap, box_y, box_w, box_h, "Dados do evento", [
         f"Tipo: {evento.get('tipo_evento_nome') or '-'}",
         f"Espaço: {evento.get('espaco_nome') or '-'}",
         f"Horário: {evento.get('hora_inicio') or '-'} às {evento.get('hora_fim') or '-'}",
-    ]
-
-    draw_box(c, margem, box_y, box_w, box_h, "Dados do cliente", cliente_linhas)
-    draw_box(c, margem + box_w + box_gap, box_y, box_w, box_h, "Dados do evento", evento_linhas)
+    ])
 
     box_y2 = box_y - box_h - 0.35*cm
-    proposta_linhas = [
+    draw_box(c, margem, box_y2, box_w, box_h, "Resumo comercial", [
         f"Convidados: {int(evento.get('quantidade_convidados') or 0)}",
         f"Forma de pagamento: {evento.get('forma_pagamento') or '-'}",
         f"Status: {evento.get('status_operacional') or '-'}",
-    ]
-    valores_linhas = [
+    ])
+    draw_box(c, margem + box_w + gap, box_y2, box_w, box_h, "Composição da proposta", [
         f"Locação: {format_currency(evento.get('valor_locacao') or 0)}",
         f"Convidados/alimentação: {format_currency(evento.get('valor_convidados') or 0)}",
         f"Serviços adicionais: {format_currency(evento.get('valor_servicos') or 0)}",
-    ]
-    draw_box(c, margem, box_y2, box_w, box_h, "Resumo comercial", proposta_linhas)
-    draw_box(c, margem + box_w + box_gap, box_y2, box_w, box_h, "Composição da proposta", valores_linhas)
+    ])
 
-    # quadro total
-    total_y = box_y2 - 2.2*cm
-    c.setFillColor(colors.HexColor("#EFE5D8"))
+    total_y = box_y2 - 2.15*cm
+    c.setFillColor(colors.HexColor("#E9DED0"))
     c.roundRect(margem, total_y, usable_w, 1.6*cm, 10, fill=1, stroke=0)
     c.setFillColor(colors.HexColor("#5A402C"))
     c.setFont("Helvetica-Bold", 11)
@@ -476,7 +717,6 @@ def gerar_pdf_proposta(evento_id):
     c.setFont("Helvetica-Bold", 18)
     c.drawRightString(margem + usable_w - 16, total_y + 0.9*cm, format_currency(evento.get("valor_total") or 0))
 
-    # tabela simples de itens
     top = total_y - 0.8*cm
     c.setFillColor(colors.HexColor("#3F2F20"))
     c.setFont("Helvetica-Bold", 13)
@@ -484,23 +724,20 @@ def gerar_pdf_proposta(evento_id):
 
     table_y = top - 0.7*cm
     row_h = 0.8*cm
-    col1 = margem
-    col2 = margem + usable_w * 0.68
-    col3 = margem + usable_w * 0.84
 
     def row(y, descricao, valor):
-        c.setStrokeColor(colors.HexColor("#D9CDBE"))
+        c.setStrokeColor(colors.HexColor("#DCCFBE"))
         c.line(margem, y, margem + usable_w, y)
         c.setFont("Helvetica", 10)
         c.setFillColor(colors.black)
-        c.drawString(col1 + 4, y - 14, descricao)
+        c.drawString(margem + 4, y - 14, descricao)
         c.drawRightString(margem + usable_w - 8, y - 14, format_currency(valor))
 
     c.setFillColor(colors.HexColor("#7A5A43"))
     c.rect(margem, table_y - row_h + 4, usable_w, row_h, fill=1, stroke=0)
     c.setFillColor(colors.white)
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(col1 + 4, table_y - 14, "Descrição")
+    c.drawString(margem + 4, table_y - 14, "Descrição")
     c.drawRightString(margem + usable_w - 8, table_y - 14, "Valor")
 
     y = table_y - row_h
@@ -509,9 +746,8 @@ def gerar_pdf_proposta(evento_id):
     row(y, "Serviços adicionais", evento.get("valor_servicos") or 0); y -= row_h
     row(y, "Desconto", -(evento.get("desconto") or 0)); y -= row_h
     c.line(margem, y, margem + usable_w, y)
-
-    # serviços detalhados
     y -= 0.9*cm
+
     c.setFillColor(colors.HexColor("#3F2F20"))
     c.setFont("Helvetica-Bold", 13)
     c.drawString(margem, y, "Detalhamento de serviços")
@@ -524,45 +760,23 @@ def gerar_pdf_proposta(evento_id):
         y -= 0.8*cm
     else:
         for _, s in servicos.iterrows():
-            if y < 4.0*cm:
-                c.showPage()
-                c.setFillColor(colors.HexColor("#FAF7F2"))
-                c.rect(0, 0, width, height, fill=1, stroke=0)
-                y = height - 2.5*cm
             descricao = f"- {s['servico']} | Fornecedor: {s['fornecedor'] or '-'} | Valor: {format_currency(s['valor'])}"
             lines = wrap_text(c, descricao, usable_w, "Helvetica", 10)
             for line in lines:
                 c.setFont("Helvetica", 10)
-                c.setFillColor(colors.black)
                 c.drawString(margem, y, line)
                 y -= 12
-            if s["observacoes"]:
-                obs_lines = wrap_text(c, f"Obs.: {s['observacoes']}", usable_w - 20, "Helvetica", 9)
-                for line in obs_lines:
-                    c.setFont("Helvetica-Oblique", 9)
-                    c.setFillColor(colors.HexColor("#5E5E5E"))
-                    c.drawString(margem + 12, y, line)
-                    y -= 11
-            y -= 6
+            y -= 4
 
-    # observações
     obs = evento.get("observacoes") or "Proposta sujeita a alinhamento final de escopo, disponibilidade e condições comerciais."
-    if y < 5.2*cm:
-        c.showPage()
-        c.setFillColor(colors.HexColor("#FAF7F2"))
-        c.rect(0, 0, width, height, fill=1, stroke=0)
-        y = height - 2.5*cm
-
     c.setFillColor(colors.HexColor("#3F2F20"))
     c.setFont("Helvetica-Bold", 13)
-    c.drawString(margem, y, "Observações")
-    y -= 0.45*cm
+    c.drawString(margem, max(y, 5.3*cm), "Observações")
+    y = max(y, 5.3*cm) - 0.45*cm
 
     c.setFillColor(colors.white)
-    c.setStrokeColor(colors.HexColor("#D9CDBE"))
-    box_h_obs = 3.2*cm
-    c.roundRect(margem, y - box_h_obs + 6, usable_w, box_h_obs, 10, fill=1, stroke=1)
-
+    c.setStrokeColor(colors.HexColor("#DCCFBE"))
+    c.roundRect(margem, y - 3.2*cm + 6, usable_w, 3.2*cm, 10, fill=1, stroke=1)
     obs_lines = wrap_text(c, obs, usable_w - 24, "Helvetica", 10)
     text_y = y - 16
     c.setFont("Helvetica", 10)
@@ -571,7 +785,6 @@ def gerar_pdf_proposta(evento_id):
         c.drawString(margem + 12, text_y, line)
         text_y -= 12
 
-    # rodapé
     c.setFillColor(colors.HexColor("#7A5A43"))
     c.setFont("Helvetica", 9)
     c.drawString(margem, 1.4*cm, "Quinta do Conde - Proposta comercial gerada pelo sistema")
@@ -582,37 +795,41 @@ def gerar_pdf_proposta(evento_id):
     return buffer.getvalue()
 
 
-st.set_page_config(
-    page_title="Quinta do Conde | Gestão Comercial de Eventos",
-    page_icon="🏡",
-    layout="wide"
-)
-
+# ---------------------------
+# UI
+# ---------------------------
+st.set_page_config(page_title="Quinta do Conde | Gestão Comercial de Eventos", page_icon="🏡", layout="wide")
 init_db()
 
 st.markdown("""
 <style>
 .stApp {
-    background: linear-gradient(180deg, #fbfaf7 0%, #f4efe8 100%);
+    background:
+        linear-gradient(180deg, rgba(250,247,242,1) 0%, rgba(243,236,227,1) 70%, rgba(237,228,216,1) 100%);
 }
-.block-container {
-    padding-top: 1rem;
-}
-h1, h2, h3 {
-    color: #3f2f20;
-}
+.block-container { padding-top: 1rem; }
+h1, h2, h3 { color: #3F2F20; }
 [data-testid="stMetric"] {
-    background: #ffffff;
-    border: 1px solid #e7dfd4;
+    background: #FFFFFF;
+    border: 1px solid #DCCFBE;
     border-radius: 18px;
     padding: 10px;
+    box-shadow: 0 2px 10px rgba(90, 64, 44, .05);
 }
 .qc-banner {
-    background: linear-gradient(120deg, rgba(85,62,43,.95), rgba(141,110,82,.92));
+    background: linear-gradient(120deg, #5A402C 0%, #7A5A43 45%, #A38666 100%);
     color: #fff;
-    padding: 18px 22px;
-    border-radius: 22px;
+    padding: 20px 24px;
+    border-radius: 24px;
     margin-bottom: 18px;
+    box-shadow: 0 8px 24px rgba(63,47,32,.15);
+}
+.qc-note {
+    background: rgba(255,255,255,.75);
+    border: 1px solid #DCCFBE;
+    border-radius: 16px;
+    padding: 12px 14px;
+    color: #5C4837;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -621,7 +838,7 @@ st.markdown("""
 <div class="qc-banner">
     <h1 style="margin:0;">🏡 Quinta do Conde</h1>
     <div style="font-size:1.05rem; margin-top:6px;">Sistema Comercial + Gestão de Eventos</div>
-    <div style="margin-top:6px; opacity:.92;">Versão com proposta em PDF e formação manual.</div>
+    <div style="margin-top:6px; opacity:.92;">Cadastro pelo sistema, backup padronizado em Excel e proposta em PDF.</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -634,7 +851,7 @@ menu = st.sidebar.radio(
         "Propostas e Eventos",
         "Agenda Comercial",
         "Financeiro",
-        "Operação / Checklist",
+        "Backup Excel",
         "Relatórios"
     ]
 )
@@ -669,33 +886,29 @@ if menu == "Dashboard Executivo":
     c3.metric("Ticket médio", format_currency(ticket_medio))
     c4.metric("Conversão comercial", f"{conversao:.1f}%")
 
-    st.subheader("Pipeline comercial")
     if not pipeline_df.empty:
-        pipe_view = pipeline_df.copy()
-        pipe_view["valor"] = pipe_view["valor"].apply(format_currency)
-        st.dataframe(pipe_view, use_container_width=True, hide_index=True)
+        st.subheader("Pipeline comercial")
+        view = pipeline_df.copy()
+        view["valor"] = view["valor"].apply(format_currency)
+        st.dataframe(view, use_container_width=True, hide_index=True)
         st.bar_chart(pipeline_df.set_index("status_pipeline")[["quantidade"]])
 
 elif menu == "CRM / Clientes":
     st.subheader("Cadastro comercial de clientes")
-
     with st.form("cliente_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         nome = c1.text_input("Nome / razão social*")
         telefone = c2.text_input("Telefone / WhatsApp")
         email = c3.text_input("E-mail")
-
         c4, c5, c6 = st.columns(3)
         documento = c4.text_input("CPF/CNPJ")
         tipo_cliente = c5.selectbox("Tipo do cliente", ["Pessoa Física", "Pessoa Jurídica"])
         empresa = c6.text_input("Empresa")
-
         c7, c8 = st.columns(2)
         origem = c7.selectbox("Origem do lead", ["Site", "Instagram", "Indicação", "Google", "WhatsApp", "Outro"])
         obs = c8.text_area("Observações")
 
-        salvar = st.form_submit_button("Salvar cliente")
-        if salvar:
+        if st.form_submit_button("Salvar cliente"):
             if not nome.strip():
                 st.error("Informe o nome do cliente.")
             else:
@@ -707,13 +920,10 @@ elif menu == "CRM / Clientes":
 
     clientes_df = run_query("""
         SELECT id, nome, telefone, email, documento, tipo_cliente, empresa, origem_lead, observacoes
-        FROM clientes
-        ORDER BY nome
+        FROM clientes ORDER BY nome
     """)
-    st.divider()
     if not clientes_df.empty:
         st.dataframe(clientes_df, use_container_width=True, hide_index=True)
-        df_to_csv_download(clientes_df, "clientes_quinta_do_conde.csv", "Baixar clientes em CSV")
     else:
         st.info("Nenhum cliente cadastrado.")
 
@@ -726,8 +936,7 @@ elif menu == "Espaços e Tipos":
             nome = e1.text_input("Nome do espaço")
             capacidade = e2.number_input("Capacidade", min_value=0, step=10)
             descricao = st.text_area("Descrição")
-            salvar = st.form_submit_button("Salvar espaço")
-            if salvar and nome.strip():
+            if st.form_submit_button("Salvar espaço") and nome.strip():
                 try:
                     execute_query("""
                         INSERT INTO espacos (nome, capacidade, descricao, ativo)
@@ -747,8 +956,7 @@ elif menu == "Espaços e Tipos":
             nome = t1.text_input("Tipo de evento")
             capacidade_sugerida = t2.number_input("Capacidade sugerida", min_value=0, step=10)
             regras = st.text_area("Regras / observações")
-            salvar = st.form_submit_button("Salvar tipo")
-            if salvar and nome.strip():
+            if st.form_submit_button("Salvar tipo") and nome.strip():
                 try:
                     execute_query("""
                         INSERT INTO tipos_evento (nome, capacidade_sugerida, regras, ativo)
@@ -811,8 +1019,7 @@ elif menu == "Propostas e Eventos":
             valor_total = max((valor_locacao + valor_convidados + valor_servicos - desconto), 0.0)
             st.info(f"Valor total da proposta: {format_currency(valor_total)}")
 
-            salvar = st.form_submit_button("Salvar proposta / evento")
-            if salvar:
+            if st.form_submit_button("Salvar proposta / evento"):
                 if not titulo.strip():
                     st.error("Informe o nome da proposta.")
                 elif existe_conflito(str(data_evento), mapa_espacos[espaco_sel]):
@@ -857,7 +1064,6 @@ elif menu == "Propostas e Eventos":
                         """, (rid, "Sinal da proposta", float(sinal_pago), str(data_evento), str(date.today()), forma_pagamento, "Registrado na abertura da proposta"))
                     st.success("Proposta/evento salvo com sucesso.")
 
-    st.divider()
     df = get_eventos_full()
     if not df.empty:
         view = df.copy()
@@ -869,8 +1075,7 @@ elif menu == "Propostas e Eventos":
         evento_pdf_sel = st.selectbox("Gerar PDF da proposta", list(opcoes_pdf.keys()))
         pdf_bytes = gerar_pdf_proposta(opcoes_pdf[evento_pdf_sel])
         if pdf_bytes:
-            nome_arquivo = f"proposta_{opcoes_pdf[evento_pdf_sel]}.pdf"
-            st.download_button("Baixar proposta em PDF", data=pdf_bytes, file_name=nome_arquivo, mime="application/pdf")
+            st.download_button("Baixar proposta em PDF", data=pdf_bytes, file_name=f"proposta_{opcoes_pdf[evento_pdf_sel]}.pdf", mime="application/pdf")
     else:
         st.info("Nenhuma proposta cadastrada.")
 
@@ -898,9 +1103,7 @@ elif menu == "Agenda Comercial":
             st.dataframe(grupo_v, use_container_width=True, hide_index=True)
 
 elif menu == "Financeiro":
-    st.subheader("Financeiro por evento")
     eventos = get_eventos_full()
-
     if eventos.empty:
         st.warning("Cadastre propostas antes de usar o financeiro.")
     else:
@@ -909,7 +1112,6 @@ elif menu == "Financeiro":
         evento_id = mapa[evento_sel]
 
         valor_total, recebido, aberto, despesas_pagas, lucro, margem = resumo_financeiro_evento(evento_id)
-
         m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("Contrato", format_currency(valor_total))
         m2.metric("Recebido", format_currency(recebido))
@@ -918,143 +1120,35 @@ elif menu == "Financeiro":
         m5.metric("Lucro realizado", format_currency(lucro))
         m6.metric("Margem", f"{margem:.1f}%")
 
-        tab1, tab2, tab3 = st.tabs(["Serviços da proposta", "Recebimentos", "Despesas"])
+elif menu == "Backup Excel":
+    st.subheader("Backup e restauração em Excel")
+    st.markdown("""
+    <div class="qc-note">
+        A inclusão e manutenção dos dados continua sendo feita pelo sistema.  
+        O Excel funciona como backup padronizado: você exporta a base e, se precisar, importa depois no mesmo formato.
+    </div>
+    """, unsafe_allow_html=True)
 
-        with tab1:
-            with st.form("servico_adicional", clear_on_submit=True):
-                s1, s2, s3 = st.columns(3)
-                servico = s1.text_input("Serviço")
-                fornecedor = s2.text_input("Fornecedor")
-                valor = s3.number_input("Valor", min_value=0.0, step=100.0)
-                obs = st.text_input("Observações")
-                salvar = st.form_submit_button("Adicionar serviço")
-                if salvar and servico.strip():
-                    execute_query("""
-                        INSERT INTO servicos_adicionais (evento_id, servico, fornecedor, valor, observacoes)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (evento_id, servico.strip(), fornecedor, float(valor), obs))
-                    total_serv = total_servicos_evento(evento_id)
-                    update_query("""
-                        UPDATE eventos
-                        SET valor_servicos = ?, valor_total = MAX((valor_locacao + valor_convidados + ? - desconto), 0)
-                        WHERE id = ?
-                    """, (total_serv, total_serv, evento_id))
-                    st.success("Serviço adicionado e proposta atualizada.")
+    col1, col2 = st.columns(2)
 
-            serv_df = get_servicos_evento(evento_id)
-            if not serv_df.empty:
-                view = serv_df.copy()
-                view["valor"] = view["valor"].apply(format_currency)
-                st.dataframe(view, use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhum serviço adicional lançado.")
+    with col1:
+        st.markdown("### Exportar backup")
+        st.write("Gera um arquivo Excel único com as abas padronizadas do sistema.")
+        excel_bytes = exportar_backup_excel()
+        nome = f"backup_quinta_do_conde_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        st.download_button("Baixar backup em Excel", data=excel_bytes, file_name=nome, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        with tab2:
-            with st.form("pag_form", clear_on_submit=True):
-                p1, p2, p3 = st.columns(3)
-                descricao = p1.text_input("Descrição", value="Parcela")
-                valor = p2.number_input("Valor do recebimento", min_value=0.0, step=100.0)
-                venc = p3.date_input("Vencimento", value=date.today())
-                p4, p5, p6 = st.columns(3)
-                data_pg = p4.date_input("Data pagamento", value=date.today())
-                status = p5.selectbox("Status", ["Em aberto", "Pago"])
-                forma = p6.selectbox("Forma", ["Pix", "Boleto", "Cartão", "Transferência", "Dinheiro", "Outro"])
-                obs = st.text_input("Observações")
-                salvar = st.form_submit_button("Salvar recebimento")
-                if salvar:
-                    execute_query("""
-                        INSERT INTO pagamentos (evento_id, descricao, valor, vencimento, data_pagamento, status, forma_pagamento, observacoes)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        evento_id, descricao, float(valor), str(venc),
-                        str(data_pg) if status == "Pago" else None, status, forma, obs
-                    ))
-                    st.success("Recebimento salvo.")
-
-            df_pag = run_query("""
-                SELECT descricao, valor, vencimento, data_pagamento, status, forma_pagamento, observacoes
-                FROM pagamentos
-                WHERE evento_id = ?
-                ORDER BY vencimento
-            """, (evento_id,))
-            if not df_pag.empty:
-                view = df_pag.copy()
-                view["valor"] = view["valor"].apply(format_currency)
-                st.dataframe(view, use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhum recebimento lançado.")
-
-        with tab3:
-            with st.form("desp_form", clear_on_submit=True):
-                d1, d2, d3 = st.columns(3)
-                fornecedor = d1.text_input("Fornecedor")
-                descricao = d2.text_input("Descrição")
-                valor = d3.number_input("Valor da despesa", min_value=0.0, step=100.0)
-                d4, d5, d6 = st.columns(3)
-                venc = d4.date_input("Vencimento", value=date.today())
-                data_pg = d5.date_input("Data pagamento", value=date.today())
-                status = d6.selectbox("Status", ["Pendente", "Paga"])
-                obs = st.text_input("Observações")
-                salvar = st.form_submit_button("Salvar despesa")
-                if salvar:
-                    execute_query("""
-                        INSERT INTO despesas (evento_id, fornecedor, descricao, valor, vencimento, data_pagamento, status, observacoes)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        evento_id, fornecedor, descricao, float(valor), str(venc),
-                        str(data_pg) if status == "Paga" else None, status, obs
-                    ))
-                    st.success("Despesa salva.")
-
-            df_d = run_query("""
-                SELECT fornecedor, descricao, valor, vencimento, data_pagamento, status, observacoes
-                FROM despesas
-                WHERE evento_id = ?
-                ORDER BY vencimento
-            """, (evento_id,))
-            if not df_d.empty:
-                view = df_d.copy()
-                view["valor"] = view["valor"].apply(format_currency)
-                st.dataframe(view, use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhuma despesa lançada.")
-
-elif menu == "Operação / Checklist":
-    st.subheader("Checklist operacional por evento")
-    eventos = get_eventos_full()
-    if eventos.empty:
-        st.warning("Cadastre eventos antes de usar o checklist.")
-    else:
-        mapa = {f"{r['codigo']} | {r['titulo']} | {r['data_evento']}": int(r["id"]) for _, r in eventos.iterrows()}
-        evento_sel = st.selectbox("Selecione o evento", list(mapa.keys()))
-        evento_id = mapa[evento_sel]
-
-        check_df = run_query("""
-            SELECT id, item, concluido, observacoes
-            FROM checklist_evento
-            WHERE evento_id = ?
-            ORDER BY id
-        """, (evento_id,))
-
-        if check_df.empty:
-            st.info("Checklist vazio.")
-        else:
-            total = len(check_df)
-            concl = int(check_df["concluido"].sum())
-            progresso = (concl / total) if total else 0
-            st.progress(progresso, text=f"Progresso do evento: {concl}/{total} itens concluídos")
-
-            for _, row in check_df.iterrows():
-                c1, c2, c3 = st.columns([4, 2, 1.5])
-                novo_status = c1.checkbox(row["item"], value=bool(row["concluido"]), key=f"item_{row['id']}")
-                nova_obs = c2.text_input("Obs.", value=row["observacoes"] or "", key=f"obs_{row['id']}")
-                if c3.button("Salvar", key=f"btn_{row['id']}"):
-                    update_query("""
-                        UPDATE checklist_evento
-                        SET concluido = ?, observacoes = ?
-                        WHERE id = ?
-                    """, (1 if novo_status else 0, nova_obs, int(row["id"])))
-                    st.success("Item atualizado.")
+    with col2:
+        st.markdown("### Importar backup")
+        st.write("Restaura a base a partir do mesmo layout exportado pelo sistema.")
+        arquivo = st.file_uploader("Selecione o backup .xlsx", type=["xlsx"])
+        confirmar = st.checkbox("Entendo que a importação substituirá a base atual do sistema.")
+        if arquivo and confirmar and st.button("Importar backup agora"):
+            try:
+                importar_backup_excel(arquivo)
+                st.success("Backup importado com sucesso.")
+            except Exception as e:
+                st.error(f"Não foi possível importar o arquivo: {e}")
 
 elif menu == "Relatórios":
     st.subheader("Relatórios gerenciais")
@@ -1076,4 +1170,3 @@ elif menu == "Relatórios":
         ]].copy()
         det["valor_total_fmt"] = det["valor_total"].apply(format_currency)
         st.dataframe(det.drop(columns=["valor_total"]), use_container_width=True, hide_index=True)
-        df_to_csv_download(det, "relatorio_gerencial_quinta_do_conde.csv", "Baixar relatório gerencial")
