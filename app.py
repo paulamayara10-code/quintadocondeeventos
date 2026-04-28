@@ -200,6 +200,56 @@ def backup_excel():
     out.seek(0)
     return out.getvalue()
 
+
+def importar_backup_excel(arquivo):
+    """
+    Restaura backup gerado pelo sistema.
+    A restauração substitui a base atual para evitar duplicidades.
+    """
+    xls = pd.ExcelFile(arquivo)
+
+    mapa_abas = {
+        "CLIENTES": "clientes",
+        "EVENTOS": "eventos",
+        "PAGAMENTOS": "pagamentos",
+        "DESPESAS": "despesas",
+        "ESPACOS": "espacos",
+        "TIPOS_EVENTO": "tipos_evento",
+    }
+
+    abas_validas = [aba for aba in mapa_abas.keys() if aba in xls.sheet_names]
+    if not abas_validas:
+        raise ValueError("O arquivo não contém abas válidas de backup do sistema.")
+
+    c = conn()
+    cur = c.cursor()
+
+    # Limpa tabelas na ordem correta para evitar conflitos.
+    for tabela in ["pagamentos", "despesas", "eventos", "clientes", "espacos", "tipos_evento"]:
+        cur.execute(f"DELETE FROM {tabela}")
+
+    c.commit()
+
+    for aba in abas_validas:
+        tabela = mapa_abas[aba]
+        df = pd.read_excel(xls, aba)
+
+        # Remove colunas automáticas ou totalmente vazias
+        df = df.dropna(axis=1, how="all")
+
+        if df.empty:
+            continue
+
+        # Garante que só entram colunas existentes na tabela
+        table_cols = [r[1] for r in cur.execute(f"PRAGMA table_info({tabela})").fetchall()]
+        df = df[[col for col in df.columns if col in table_cols]]
+
+        if not df.empty:
+            df.to_sql(tabela, c, if_exists="append", index=False)
+
+    c.commit()
+    c.close()
+
 def fluxo_df(inicio, fim, saldo_inicial):
     receb = q("""SELECT data_pagamento AS data, SUM(valor) entradas FROM pagamentos
                  WHERE status='Pago' AND data_pagamento BETWEEN ? AND ? GROUP BY data_pagamento""", (str(inicio), str(fim)))
@@ -261,8 +311,8 @@ div[data-testid="stSidebar"] { background:#F4EBDD; }
 </style>
 <div class="hero">
     <h1 style="margin:0;">🏡 Quinta do Conde</h1>
-    <div style="opacity:.94;font-size:1.10rem;margin-top:6px;">Sistema Premium de Eventos e Financeiro</div>
-    <div style="opacity:.90;margin-top:5px;">Dashboard executivo, previsão de caixa, alertas, despesas fixas, backup em Excel e base inicial limpa.</div>
+    <div style="opacity:.94;font-size:1.10rem;margin-top:6px;">Sistema Premium de Eventos e Financeiro V10</div>
+    <div style="opacity:.90;margin-top:5px;">Dashboard executivo, previsão de caixa, alertas, despesas fixas, backup em Excel e base inicial limpa e restauração de backup.</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -615,14 +665,33 @@ elif menu == "Agenda":
 
 elif menu == "Backup Excel":
     st.subheader("Backup em Excel")
-    st.markdown('<div class="card">Exporta eventos, pagamentos e despesas fixas/gerais.</div>',unsafe_allow_html=True)
-    st.download_button("Baixar backup em Excel", data=backup_excel(), file_name=f"backup_quinta_do_conde_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.markdown('<div class="card">Use esta tela para exportar um backup da base e restaurar os dados caso algo suma. A restauração substitui a base atual para evitar duplicidade.</div>', unsafe_allow_html=True)
+
+    tab_exp, tab_imp = st.tabs(["Exportar backup", "Importar / Restaurar backup"])
+
+    with tab_exp:
+        st.write("Baixe um arquivo Excel com clientes, eventos, pagamentos, despesas, espaços e tipos de evento.")
+        st.download_button(
+            "Baixar backup em Excel",
+            data=backup_excel(),
+            file_name=f"backup_quinta_do_conde_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    with tab_imp:
+        st.warning("A importação substituirá a base atual do sistema. Antes de importar, gere um backup da base atual.")
+        arquivo = st.file_uploader("Selecione o arquivo de backup (.xlsx)", type=["xlsx"])
+        confirmar = st.checkbox("Confirmo que desejo substituir a base atual pelos dados deste backup.")
+        if arquivo and confirmar:
+            if st.button("Restaurar backup agora"):
+                try:
+                    importar_backup_excel(arquivo)
+                    st.success("Backup restaurado com sucesso.")
+                except Exception as e:
+                    st.error(f"Não foi possível restaurar o backup: {e}")
 
 elif menu == "Cadastros":
-    st.markdown("<div class='card'>A base começa limpa. Cadastre manualmente os espaços e tipos de evento, ou carregue uma sugestão inicial se fizer sentido.</div>", unsafe_allow_html=True)
-    if st.button("Carregar cadastros sugeridos da Quinta do Conde"):
-        carregar_cadastros_sugeridos()
-        st.success("Cadastros sugeridos carregados com sucesso.")
+    st.markdown("<div class='card'>A base começa limpa. Cadastre manualmente os espaços e tipos de evento conforme a operação real.</div>", unsafe_allow_html=True)
     tab1,tab2=st.tabs(["Espaços","Tipos de evento"])
     with tab1:
         with st.form("espaco_form",clear_on_submit=True):
