@@ -1,23 +1,13 @@
-# Quinta do Conde - Sistema Comercial + Gestão de Eventos (V5)
+# Quinta do Conde - Sistema Premium V9
 
-## Novidades desta versão
-- opção de exportar backup completo em Excel
-- opção de importar o mesmo backup para restaurar a base
-- inclusão via sistema permanece normal
-- proposta em PDF mantida
-- layout refinado com paleta mais inspirada no estilo rústico/elegante da Quinta do Conde
+Novidades:
+- Dashboard premium com alertas
+- Fluxo de caixa projetado com alerta de saldo negativo
+- Despesas fixas e gerais sem evento
+- Pagamentos de eventos
+- Backup Excel
+- Layout mais executivo
 
-## Como funciona o backup
-- o sistema continua sendo o ponto principal de cadastro
-- o Excel funciona como backup e intercâmbio padronizado
-- a importação substitui a base atual do sistema
-
-## Como rodar
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-## Arquivos importantes
-- `eventos_fazenda_v5.db` = base local SQLite
-- backup Excel = arquivo exportado pela tela "Backup Excel"
+Subir no GitHub:
+- app.py
+- requirements.txt
