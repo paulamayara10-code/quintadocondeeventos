@@ -311,8 +311,8 @@ div[data-testid="stSidebar"] { background:#F4EBDD; }
 </style>
 <div class="hero">
     <h1 style="margin:0;">🏡 Quinta do Conde</h1>
-    <div style="opacity:.94;font-size:1.10rem;margin-top:6px;">Sistema Premium de Eventos e Financeiro V10</div>
-    <div style="opacity:.90;margin-top:5px;">Dashboard executivo, previsão de caixa, alertas, despesas fixas, backup em Excel e base inicial limpa e restauração de backup.</div>
+    <div style="opacity:.94;font-size:1.10rem;margin-top:6px;">Sistema de Eventos e Financeiro V10</div>
+    <div style="opacity:.90;margin-top:5px;">Dashboard executivo, previsão de caixa.</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -691,7 +691,7 @@ elif menu == "Backup Excel":
                     st.error(f"Não foi possível restaurar o backup: {e}")
 
 elif menu == "Cadastros":
-    st.markdown("<div class='card'>A base começa limpa. Cadastre manualmente os espaços e tipos de evento conforme a operação real.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='card'> Cadastre manualmente os espaços e tipos de evento conforme a operação real.</div>", unsafe_allow_html=True)
     tab1,tab2=st.tabs(["Espaços","Tipos de evento"])
     with tab1:
         with st.form("espaco_form",clear_on_submit=True):
