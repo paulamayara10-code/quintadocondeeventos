@@ -72,29 +72,7 @@ def init_db():
             try: add_col(table, col, definition)
             except Exception: pass
 
-    if q("SELECT COUNT(*) qtd FROM espacos")["qtd"].iloc[0] == 0:
-        for item in [
-            ("Salão Principal",250,"Eventos sociais e corporativos"),
-            ("Área Externa",400,"Jardins e área aberta"),
-            ("Piscinas e Toboáguas",180,"Day use e lazer"),
-            ("Espaço Corporativo",150,"Treinamentos e workshops"),
-            ("Churrasco e Confraternizações",120,"Eventos menores")
-        ]:
-            x("INSERT INTO espacos(nome,capacidade,descricao,ativo) VALUES(?,?,?,1)", item)
-
-    existentes = set(q("SELECT nome FROM tipos_evento")["nome"].tolist())
-    for item in [
-        ("Casamento",200,"Evento social premium"),
-        ("Aniversário",100,"Evento social"),
-        ("Corporativo",120,"Evento empresarial"),
-        ("Formatura",250,"Evento social ampliado"),
-        ("Ensaio Fotográfico",15,"Pacote enxuto"),
-        ("15 Anos",150,"Evento social premium"),
-        ("Workshop",80,"Formato diurno"),
-        ("Day Use",80,"Lazer e alimentação opcional")
-    ]:
-        if item[0] not in existentes:
-            x("INSERT INTO tipos_evento(nome,capacidade_sugerida,regras,ativo) VALUES(?,?,?,1)", item)
+    # Base limpa: nenhum cadastro é carregado automaticamente.
 
 def moeda(v):
     try:
@@ -113,6 +91,39 @@ def data_safe(v):
 def clientes_df(): return q("SELECT id,nome FROM clientes ORDER BY nome")
 def espacos_df(): return q("SELECT id,nome,capacidade FROM espacos WHERE ativo=1 ORDER BY nome")
 def tipos_df(): return q("SELECT id,nome FROM tipos_evento WHERE ativo=1 ORDER BY nome")
+
+def carregar_cadastros_sugeridos():
+    """Carrega sugestões de espaços e tipos somente quando o usuário clicar no botão."""
+    espacos = [
+        ("Salão Principal",250,"Eventos sociais e corporativos"),
+        ("Área Externa",400,"Jardins e área aberta"),
+        ("Piscinas e Toboáguas",180,"Day use e lazer"),
+        ("Espaço Corporativo",150,"Treinamentos e workshops"),
+        ("Churrasco e Confraternizações",120,"Eventos menores")
+    ]
+    tipos = [
+        ("Casamento",200,"Evento social premium"),
+        ("Aniversário",100,"Evento social"),
+        ("Corporativo",120,"Evento empresarial"),
+        ("Formatura",250,"Evento social ampliado"),
+        ("Ensaio Fotográfico",15,"Pacote enxuto"),
+        ("15 Anos",150,"Evento social premium"),
+        ("Workshop",80,"Formato diurno"),
+        ("Day Use",80,"Lazer e alimentação opcional")
+    ]
+
+    existentes_espacos_df = q("SELECT nome FROM espacos")
+    existentes_espacos = set(existentes_espacos_df["nome"].tolist()) if not existentes_espacos_df.empty else set()
+    for item in espacos:
+        if item[0] not in existentes_espacos:
+            x("INSERT INTO espacos(nome,capacidade,descricao,ativo) VALUES(?,?,?,1)", item)
+
+    existentes_tipos_df = q("SELECT nome FROM tipos_evento")
+    existentes_tipos = set(existentes_tipos_df["nome"].tolist()) if not existentes_tipos_df.empty else set()
+    for item in tipos:
+        if item[0] not in existentes_tipos:
+            x("INSERT INTO tipos_evento(nome,capacidade_sugerida,regras,ativo) VALUES(?,?,?,1)", item)
+
 
 def eventos_df():
     return q("""
@@ -141,11 +152,51 @@ def conflito(data_evento, espaco_id, evento_id=None):
     return not q(sql, tuple(params)).empty
 
 def backup_excel():
+    """
+    Gera backup Excel de forma segura.
+    Corrige o erro 'At least one sheet must be visible' garantindo que:
+    1) a aba INSTRUCOES sempre exista;
+    2) falhas em alguma tabela não impedem a geração do arquivo;
+    3) nomes de abas ficam dentro do limite do Excel.
+    """
     out = BytesIO()
+
+    tabelas = [
+        ("clientes", "CLIENTES"),
+        ("eventos", "EVENTOS"),
+        ("pagamentos", "PAGAMENTOS"),
+        ("despesas", "DESPESAS"),
+        ("espacos", "ESPACOS"),
+        ("tipos_evento", "TIPOS_EVENTO"),
+    ]
+
+    instrucoes = pd.DataFrame({
+        "ORIENTACAO": [
+            "Backup padrão do sistema Quinta do Conde.",
+            "Financeiro funciona mesmo sem eventos.",
+            "Despesas fixas/gerais ficam na aba DESPESAS.",
+            "Este arquivo foi gerado automaticamente pelo sistema."
+        ]
+    })
+
+    erros = []
+
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        pd.DataFrame({"ORIENTACAO":["Backup padrão do sistema Quinta do Conde.","Financeiro funciona mesmo sem eventos.","Despesas fixas/gerais ficam na aba DESPESAS."]}).to_excel(writer, "INSTRUCOES", index=False)
-        for tabela in ["clientes","eventos","pagamentos","despesas","espacos","tipos_evento"]:
-            q(f"SELECT * FROM {tabela}").to_excel(writer, tabela.upper(), index=False)
+        # Primeira aba sempre criada
+        instrucoes.to_excel(writer, sheet_name="INSTRUCOES", index=False)
+
+        for tabela, aba in tabelas:
+            try:
+                df = q(f"SELECT * FROM {tabela}")
+                # Excel limita nomes de abas a 31 caracteres
+                aba_segura = aba[:31]
+                df.to_excel(writer, sheet_name=aba_segura, index=False)
+            except Exception as e:
+                erros.append({"TABELA": tabela, "ERRO": str(e)})
+
+        if erros:
+            pd.DataFrame(erros).to_excel(writer, sheet_name="LOG_ERROS", index=False)
+
     out.seek(0)
     return out.getvalue()
 
@@ -211,7 +262,7 @@ div[data-testid="stSidebar"] { background:#F4EBDD; }
 <div class="hero">
     <h1 style="margin:0;">🏡 Quinta do Conde</h1>
     <div style="opacity:.94;font-size:1.10rem;margin-top:6px;">Sistema Premium de Eventos e Financeiro</div>
-    <div style="opacity:.90;margin-top:5px;">Dashboard executivo, previsão de caixa, alertas, despesas fixas e backup em Excel.</div>
+    <div style="opacity:.90;margin-top:5px;">Dashboard executivo, previsão de caixa, alertas, despesas fixas, backup em Excel e base inicial limpa.</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -324,6 +375,12 @@ elif menu == "Eventos":
         cli=clientes_df(); esp=espacos_df(); tip=tipos_df()
         if cli.empty:
             st.warning("Cadastre um cliente primeiro.")
+            return None
+        if esp.empty:
+            st.warning("Cadastre pelo menos um espaço antes de criar eventos.")
+            return None
+        if tip.empty:
+            st.warning("Cadastre pelo menos um tipo de evento antes de criar eventos.")
             return None
         mcli=dict(zip(cli["nome"],cli["id"]))
         mesp={f"{a.nome} | cap. {int(a.capacidade)}":int(a.id) for a in esp.itertuples()}
@@ -562,6 +619,10 @@ elif menu == "Backup Excel":
     st.download_button("Baixar backup em Excel", data=backup_excel(), file_name=f"backup_quinta_do_conde_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 elif menu == "Cadastros":
+    st.markdown("<div class='card'>A base começa limpa. Cadastre manualmente os espaços e tipos de evento, ou carregue uma sugestão inicial se fizer sentido.</div>", unsafe_allow_html=True)
+    if st.button("Carregar cadastros sugeridos da Quinta do Conde"):
+        carregar_cadastros_sugeridos()
+        st.success("Cadastros sugeridos carregados com sucesso.")
     tab1,tab2=st.tabs(["Espaços","Tipos de evento"])
     with tab1:
         with st.form("espaco_form",clear_on_submit=True):
